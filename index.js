@@ -28,7 +28,8 @@ async function consultarCatalogo() {
     const sheets = google.sheets({ version: 'v4', auth });
     const res    = await sheets.spreadsheets.values.get({
       spreadsheetId: SHEET_ID,
-      range:         `${SHEET_NAME}!B6:D48`
+      range:             `${SHEET_NAME}!B6:D48`,
+      valueRenderOption: "FORMATTED_VALUE"
     });
 
     const rows = res.data.values || [];
