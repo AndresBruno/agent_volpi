@@ -2,6 +2,9 @@ const express    = require('express');
 const { OpenAI } = require('openai');
 const twilio     = require('twilio');
 const { google } = require('googleapis');
+const fetch      = require('node-fetch');
+const fs         = require('fs');
+const path       = require('path');
 
 const app    = express();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -12,7 +15,6 @@ app.use(express.json());
 const SHEET_ID   = '1TJXFhnI-E_J83YQ8pK7dSFRhQTQuZGwLoMCTbMOdE8w';
 const SHEET_NAME = 'RECETA';
 
-// Autenticación Google usando variable de entorno
 function getGoogleAuth() {
   const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
   return new google.auth.GoogleAuth({
@@ -21,27 +23,56 @@ function getGoogleAuth() {
   });
 }
 
-// Consultar catálogo de marcas y precios desde el Sheet
 async function consultarCatalogo() {
   try {
     const auth   = getGoogleAuth();
     const sheets = google.sheets({ version: 'v4', auth });
     const res    = await sheets.spreadsheets.values.get({
-      spreadsheetId: SHEET_ID,
+      spreadsheetId:     SHEET_ID,
       range:             `${SHEET_NAME}!B6:D48`,
-      valueRenderOption: "FORMATTED_VALUE"
+      valueRenderOption: 'FORMATTED_VALUE'
     });
-
     const rows = res.data.values || [];
     if (rows.length === 0) return 'No hay datos en el catálogo.';
-
     return rows
       .filter(row => row[0])
       .map(row => `- ${row[0]}${row[2] ? ': $' + row[2] : ''}`)
       .join('\n');
-
   } catch (error) {
     console.error('Error consultando Sheet:', error.message);
+    return null;
+  }
+}
+
+// Transcribir audio con Whisper
+async function transcribirAudio(mediaUrl) {
+  try {
+    const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+
+    // Descargar el audio con autenticación de Twilio
+    const response = await fetch(mediaUrl, {
+      headers: {
+        'Authorization': 'Basic ' + Buffer.from(
+          process.env.TWILIO_ACCOUNT_SID + ':' + process.env.TWILIO_AUTH_TOKEN
+        ).toString('base64')
+      }
+    });
+
+    const buffer   = await response.buffer();
+    const tmpPath  = path.join('/tmp', `audio_${Date.now()}.ogg`);
+    fs.writeFileSync(tmpPath, buffer);
+
+    const transcripcion = await openai.audio.transcriptions.create({
+      file:     fs.createReadStream(tmpPath),
+      model:    'whisper-1',
+      language: 'es'
+    });
+
+    fs.unlinkSync(tmpPath);
+    return transcripcion.text;
+
+  } catch (error) {
+    console.error('Error transcribiendo audio:', error.message);
     return null;
   }
 }
@@ -80,24 +111,41 @@ app.get('/', (req, res) => {
 });
 
 app.post('/webhook', async (req, res) => {
-  const twiml     = new twilio.twiml.MessagingResponse();
-  const mensaje   = req.body.Body || '';
-  const remitente = req.body.From || '';
+  const twiml      = new twilio.twiml.MessagingResponse();
+  const remitente  = req.body.From || '';
+  let   mensaje    = req.body.Body || '';
 
   try {
+    // Si es un mensaje de voz, transcribir
+    const numMedia = parseInt(req.body.NumMedia || '0');
+    if (numMedia > 0 && req.body.MediaContentType0 && req.body.MediaContentType0.includes('audio')) {
+      const audioUrl     = req.body.MediaUrl0;
+      const transcripcion = await transcribirAudio(audioUrl);
+      if (transcripcion) {
+        mensaje = transcripcion;
+      } else {
+        twiml.message('No pude procesar tu mensaje de voz. ¿Podés escribirme?');
+        res.writeHead(200, { 'Content-Type': 'text/xml' });
+        return res.end(twiml.toString());
+      }
+    }
+
+    if (!mensaje.trim()) {
+      twiml.message('No recibí ningún mensaje. ¿En qué te puedo ayudar?');
+      res.writeHead(200, { 'Content-Type': 'text/xml' });
+      return res.end(twiml.toString());
+    }
+
     if (!conversaciones[remitente]) {
       conversaciones[remitente] = [
         { role: 'system', content: SYSTEM_PROMPT }
       ];
     }
 
-    // Detectar si la pregunta es sobre marcas o precios
     const preguntaCatalogo = /marca|precio|anteojos|modelo|tienen|ray.ban|oakley|prada|gucci|armani|cuánto|cuanto/i.test(mensaje);
-
     if (preguntaCatalogo) {
       const catalogo = await consultarCatalogo();
       if (catalogo) {
-        // Inyectar catálogo actualizado en el contexto
         conversaciones[remitente].push({
           role:    'system',
           content: `Catálogo actualizado de marcas y precios:\n${catalogo}`
