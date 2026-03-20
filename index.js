@@ -11,50 +11,67 @@ app.use(express.json());
 // Historial de conversaciones por número de WhatsApp
 const conversaciones = {};
 
-// System prompt del agente — editalo a tu gusto
-const SYSTEM_PROMPT = `Sos un asistente virtual del consultorio oftalmológico. 
-Respondés preguntas frecuentes, informás horarios y contacto, y ayudás a los pacientes. 
-Siempre respondés en español, de forma amable y concisa.
-Si no podés resolver algo, indicá que un humano se va a comunicar a la brevedad.`;
+const SYSTEM_PROMPT = `Sos el asistente virtual de Óptica Volpi. Tu rol es atender consultas de clientes por WhatsApp de forma amable, clara y concisa.
+
+INFORMACIÓN DEL LOCAL:
+- Nombre: Óptica Volpi
+- Dirección: Avda. Congreso 2368
+- Teléfono: 4563-1609
+- Horario de atención: lunes a viernes de 10 a 20 hs
+
+PRODUCTOS Y SERVICIOS:
+- Anteojos de receta y de sol
+- Lentes de contacto
+- Soluciones para lentes de contacto
+
+FORMAS DE PAGO:
+- Si no sabés las formas de pago exactas, respondé: "Aceptamos efectivo y tarjetas. Para más detalles podés llamarnos al 4563-1609 o visitarnos en el local."
+
+MARCAS:
+- Si te preguntan por una marca específica que no conocés, respondé: "Para consultar disponibilidad de esa marca te recomendamos llamarnos al 4563-1609 o visitarnos. Nuestro equipo te va a asesorar con gusto."
+
+TURNOS:
+- Los clientes pueden acercarse directamente al local en el horario de atención o llamar al 4563-1609 para coordinar.
+
+REGLAS IMPORTANTES:
+- Siempre respondé en español rioplatense (usá "vos" en lugar de "tú")
+- Sé amable y breve — máximo 3 oraciones por respuesta
+- Si no podés resolver algo, decí: "Para más información podés llamarnos al 4563-1609 o visitarnos en Avda. Congreso 2368 de 10 a 20 hs."
+- Nunca inventes información que no tenés
+- No hagas preguntas múltiples en una misma respuesta`;
 
 app.get('/', (req, res) => {
-  res.send('Agente WhatsApp activo');
+  res.send('Agente WhatsApp Óptica Volpi activo');
 });
 
 app.post('/webhook', async (req, res) => {
-  const twiml      = new twilio.twiml.MessagingResponse();
-  const mensaje    = req.body.Body || '';
-  const remitente  = req.body.From || '';
+  const twiml     = new twilio.twiml.MessagingResponse();
+  const mensaje   = req.body.Body || '';
+  const remitente = req.body.From || '';
 
   try {
-    // Inicializar historial si no existe
     if (!conversaciones[remitente]) {
       conversaciones[remitente] = [
         { role: 'system', content: SYSTEM_PROMPT }
       ];
     }
 
-    // Agregar mensaje del usuario al historial
     conversaciones[remitente].push({ role: 'user', content: mensaje });
 
-    // Limitar historial a últimos 20 mensajes para no exceder tokens
     if (conversaciones[remitente].length > 21) {
       conversaciones[remitente] = [
-        conversaciones[remitente][0],               // mantener system prompt
-        ...conversaciones[remitente].slice(-20)     // últimos 20 mensajes
+        conversaciones[remitente][0],
+        ...conversaciones[remitente].slice(-20)
       ];
     }
 
-    // Llamar a GPT-4
     const completion = await openai.chat.completions.create({
-      model:    'gpt-4o-mini',  // más económico, cambiá a 'gpt-4' si preferís
-      messages: conversaciones[remitente],
-      max_tokens: 500
+      model:      'gpt-4o-mini',
+      messages:   conversaciones[remitente],
+      max_tokens: 300
     });
 
     const respuesta = completion.choices[0].message.content;
-
-    // Guardar respuesta en historial
     conversaciones[remitente].push({ role: 'assistant', content: respuesta });
 
     twiml.message(respuesta);
